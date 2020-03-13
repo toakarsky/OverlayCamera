@@ -16,8 +16,11 @@ from .settings import STREAM_URL
 from .settings import TEXT_DATA_REFRESH
 from .settings import TEXT_SPACE, TEXT_SIZE
 from .settings import TEXT_FONT, TEXT_THICCNESS, TEXT_COLOR
-from .settings import TEXT_DATA_FILENAME
-from .settings import TEXT_WRAP
+from .settings import TEXT_DATA_FILENAMES
+from .settings import TEXT_WRAP, TEXT_MARGINES, TEXT_MARGINES_BETWEEN_FILES
+from .settings import TEXT_ALIGNMENTS, TEXT_ALIGNMENT_VERTICAL, TEXT_ALIGNMENT_HORIZONTAL
+
+from .settings import OUTPUT_SCALE
 
 
 class CameraEvent(object):
@@ -115,13 +118,6 @@ class BaseCamera(object):
                 BaseCamera.last_update = time.time()
                 cls._update()
                 
-                
-            # if there hasn't been any clients asking for frames in
-            # the last 10 seconds then stop the thread
-            if time.time() - BaseCamera.last_access > 10:
-                frames_iterator.close()
-                print('Stopping camera thread due to inactivity.')
-                break
         BaseCamera.thread = None
 
 
@@ -129,26 +125,57 @@ class OverlayCamera(BaseCamera):
     textLines = ['']
     textData = (0, 0)
     offset = (0, 0)
+    render_pos = [0, 0]
+    width = 0
+    height = 0
     
     @staticmethod
     def _update():
-        try:
-            with open(TEXT_DATA_FILENAME, 'r') as textData:
-                pureTextLines = [x.strip() for x in textData.readlines()]
-            OverlayCamera.textLines = []
-            for pureTextLine in pureTextLines:
-                OverlayCamera.textLines.extend(textwrap.wrap(pureTextLine, width=TEXT_WRAP))
+        OverlayCamera.textLines = []
+        height = 0            
+        max_width = 0
+        number_of_lines = 0
+        for textFileName in TEXT_DATA_FILENAMES:
+            if textFileName == None:
+                OverlayCamera.textLines.append([])
+            try:
+                with open(textFileName, 'r') as textData:
+                    pureTextLines = [x.strip() for x in textData.readlines()]
+                wrappedLines = []
+                for pureTextLine in pureTextLines:
+                    wrappedLines.extend(textwrap.wrap(pureTextLine, width=TEXT_WRAP))
+                OverlayCamera.textLines.append(wrappedLines)
 
-            height = 0            
-            max_width = 0
-            for textLine in OverlayCamera.textLines:
-                lineSize = cv2.getTextSize(textLine, TEXT_FONT, TEXT_SIZE, TEXT_THICCNESS)[0]
-                max_width = max(max_width, lineSize[0])
-                height = lineSize[1] + 10 * TEXT_SIZE
-            OverlayCamera.textData = (max_width, height)
-            OverlayCamera.offset = (int(max_width / 2), int(height * len(OverlayCamera.textLines) / 2))
-        except:
-            print('[ERROR] File not available')
+                number_of_lines += len(OverlayCamera.textLines[-1])
+                for textLine in wrappedLines:
+                    lineSize = cv2.getTextSize(textLine, TEXT_FONT, TEXT_SIZE, TEXT_THICCNESS)[0]
+                    max_width = max(max_width, lineSize[0])
+                    height = (lineSize[1] + 10) * TEXT_SIZE
+            except:
+                print(f'[ERROR] File {textFileName} not available')
+        OverlayCamera.textData = (max_width, height)
+        OverlayCamera.offset = (int(max_width), int(height * number_of_lines))
+        # print('yes')
+        # print(number_of_lines)
+        # print(OverlayCamera.textData)
+
+        OverlayCamera.render_pos = [0, 0]
+        if TEXT_ALIGNMENT_VERTICAL == TEXT_ALIGNMENTS.START:
+            OverlayCamera.render_pos[1] = 0
+        elif TEXT_ALIGNMENT_VERTICAL == TEXT_ALIGNMENTS.CENTER:
+            OverlayCamera.render_pos[1] = int(OverlayCamera.height / 2 - OverlayCamera.offset[1] / 2)
+        elif TEXT_ALIGNMENT_VERTICAL == TEXT_ALIGNMENTS.END:
+            OverlayCamera.render_pos[1] = int(OverlayCamera.height - OverlayCamera.offset[1])
+    
+        if TEXT_ALIGNMENT_HORIZONTAL == TEXT_ALIGNMENTS.START:
+            OverlayCamera.render_pos[0] = 0 + OverlayCamera.width
+        elif TEXT_ALIGNMENT_HORIZONTAL == TEXT_ALIGNMENTS.CENTER:
+            OverlayCamera.render_pos[0] = int(TEXT_SPACE / 2 - OverlayCamera.offset[0]) + OverlayCamera.width + 1
+        elif TEXT_ALIGNMENT_HORIZONTAL == TEXT_ALIGNMENTS.END:
+            OverlayCamera.render_pos[0] = int(TEXT_SPACE - OverlayCamera.offset[0]) + OverlayCamera.width + 1
+        
+        OverlayCamera.render_pos[0] += (TEXT_MARGINES[3] - TEXT_MARGINES[1])
+        OverlayCamera.render_pos[1] += (TEXT_MARGINES[0] - TEXT_MARGINES[2])
     
     @staticmethod
     def frames():
@@ -156,19 +183,30 @@ class OverlayCamera(BaseCamera):
         if not vcap.isOpened():
             raise RuntimeError('Could not start camera.')
         
-        width = int(vcap.get(3))
-        height = int(vcap.get(4))
+        OverlayCamera.width = int(vcap.get(3))
+        OverlayCamera.height = int(vcap.get(4))
         
+        DIM = (int((TEXT_SPACE + vcap.get(3)) * OUTPUT_SCALE), int(vcap.get(4) * OUTPUT_SCALE))
+
         OverlayCamera._update()
         last_frame = None
         while True:
             # read current frame
             _, frame = vcap.read()
             frame = cv2.copyMakeBorder(frame, 0, 0, 0, TEXT_SPACE, cv2.BORDER_CONSTANT, value=(255, 255, 255))
-            y = int(height / 2 - OverlayCamera.offset[1])
-            for line in OverlayCamera.textLines:
-                y += OverlayCamera.textData[1]
-                cv2.putText(frame, line, (width + int(TEXT_SPACE / 2) - OverlayCamera.offset[0], y), TEXT_FONT, TEXT_SIZE, TEXT_COLOR, TEXT_THICCNESS)
+            y = 0
+            x = 0
+            try:
+                for textFile in OverlayCamera.textLines:
+                    for line in textFile:
+                        cv2.putText(frame, line, (OverlayCamera.render_pos[0] + x, OverlayCamera.render_pos[1] + y), TEXT_FONT, TEXT_SIZE, TEXT_COLOR, TEXT_THICCNESS)
+                        y += OverlayCamera.textData[1]
+                    y += TEXT_MARGINES_BETWEEN_FILES[0] - TEXT_MARGINES_BETWEEN_FILES[2]
+                    x += TEXT_MARGINES_BETWEEN_FILES[3] - TEXT_MARGINES_BETWEEN_FILES[1]
+            except:
+                print('[ERROR] Something wrong with text')
+
+            frame = cv2.resize(frame, DIM, interpolation = cv2.INTER_AREA)
             
             # encode as a jpeg image and return it
             try:
